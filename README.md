@@ -31,7 +31,7 @@ The tool works as follows:
 
 Clone this repository and install the python libraries from `requirements.txt` using your preferred python package management solution. Note: you will need to install `libmagic`. Please see the instructions on [the `python-magic` pypi page](https://pypi.org/project/python-magic/).
 
-You'll need to set environment variables, `BLUESKY_USERNAME` and `BLUESKY_PASSWORD` in your OS. Unfortunately, Bluesky does not currently support a more secure AuthN solution such as OAuth at this time.
+You no longer need to set environment variables, `BLUESKY_USERNAME` and `BLUESKY_PASSWORD` in your OS. I suggest creating an App-Password.
 
 ## Running
 
@@ -44,6 +44,10 @@ python skeeter-deleter.py
 ```
 
 with the following command line options:
+
+- `-u [username]`: your Bluesky username
+
+- `-p [password]`: your Bluesky password. I suggest creating an App password for this!
 
 - `-l`, `--max-reposts`: the upper limit of reposts a post can have before it is deleted. This is to prevent post virality by deleting posts once they've grown too popular. Set this to 0 or ignore the flag if you don't want to use this feature. Note: at least either `-s` or `-l` (or both) must be set to delete posts, replies, reblogs, or likes.
 
@@ -59,15 +63,19 @@ with the following command line options:
 
 - `-y`, `--yes`: automatically answer yes to all warnings about deleting posts, necessary for use in automation.
 
+## Example
+`python skeeter_deleter.py -u myusername -p mypassword -d example.com,mydomain.net -l 20 -s 14 -c 222lncibbzz22`
+This command:
+ - Uses myusername and mypassword for login.
+ - Protects posts linking to example.com and mydomain.net.
+ - Marks posts with 20 or more reposts as viral.
+ - Treats posts older than 14 days as stale.
+ - Uses 222lncibbzz22 as the fixed likes cursor.
+
 ### Automating
 
 This could be run in a docker container in a Github action, in a cloud function, or in any other scheduled environment.
 
 ## Future Roadmap
 
-A few features are planned:
-
-- Cloud archiving
-- Github action wrapper
-- AWS Lambda, Azure Function, etc bindings
-- Storing archives as JSON or other usable formats
+Bug fixing as they come up using it.
