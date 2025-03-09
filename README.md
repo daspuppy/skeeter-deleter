@@ -69,13 +69,19 @@ with the following command line options:
 This command:
  - Uses myusername and mypassword for login.
  - Protects posts linking to example.com and mydomain.net.
- - Marks posts with 20 or more reposts as viral.
- - Treats posts older than 14 days as stale.
- - Uses 222lncibbzz22 as the fixed likes cursor.
+ - Marks posts with 20 or more reposts as viral and deletes them if not liked by yourself.
+ - Treats posts older than 14 days as stale and deletes them if not liked by yourself.
+ - Uses 222lncibbzz22 as the fixed likes cursor. Indexing all likes is still extremely slow.
+ - Try with `-v` to see that it is actually running. It takes hours. Especially for the first run!
+ - use `-y` once you're satisfied with your settings and it will automatically answer yes to all questions about unliking and deleting old posts and reposts you haven't liked yourself.
 
 ### Automating
 
 This could be run in a docker container in a Github action, in a cloud function, or in any other scheduled environment.
+
+A simple shell script could look like this:
+    source /path/to/skeeter-venv/bin/activate
+    python /path/to/skeeter-deleter/skeeter-deleter.py -u username -p mypassword -d example.com,mydomain.net -l 20 -s 14
 
 ## Future Roadmap
 
