@@ -21,7 +21,7 @@ The tool allows you to create a curated feed of your content. Simply "like" your
 
 The tool works as follows:
 
-1. it downloads a CAR archive and all embedded media and stores it to an `archive` folder locally
+1. it downloads a CAR archive and creates a JSON file and an HTML file of all embedded media and stores it to an `archive` folder locally
 1. it reads your account's likes feed and gathers likes of a certain configurable age
 1. it reads your account's posts, replies, and reposts and gathers all such items of a certain configurable age or popularity, as measured by the number of reblogs
 1. it unlikes posts
@@ -31,7 +31,7 @@ The tool works as follows:
 
 Clone this repository and install the python libraries from `requirements.txt` using your preferred python package management solution. Note: you will need to install `libmagic`. Please see the instructions on [the `python-magic` pypi page](https://pypi.org/project/python-magic/).
 
-You no longer need to set environment variables, `BLUESKY_USERNAME` and `BLUESKY_PASSWORD` in your OS. I suggest creating an App-Password.
+[b]You no longer need to set environment variables, `BLUESKY_USERNAME` and `BLUESKY_PASSWORD` in your OS. I suggest creating an App-Password.[/b]
 
 ## Running
 
@@ -65,6 +65,7 @@ with the following command line options:
 
 ## Example
 `python skeeter_deleter.py -u myusername -p mypassword -d example.com,mydomain.net -l 20 -s 14 -c 222lncibbzz22`
+
 This command:
  - Uses myusername and mypassword for login.
  - Protects posts linking to example.com and mydomain.net.
