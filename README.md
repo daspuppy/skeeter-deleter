@@ -80,6 +80,7 @@ This command:
 This could be run in a docker container in a Github action, in a cloud function, or in any other scheduled environment.
 
 A simple shell script could look like this:
+
     source /path/to/skeeter-venv/bin/activate
     python /path/to/skeeter-deleter/skeeter-deleter.py -u username -p mypassword -d example.com,mydomain.net -l 20 -s 14
 
