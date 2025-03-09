@@ -3,6 +3,8 @@ A github action for auto-deleting Bluesky posts.
 
 THIS CODE IS VERY DESTRUCTIVE. The maintainer assumes no liability or warranty for its use. Use at your own peril.
 
+This code was created for my own personal use, and my use alone. I share it here to learn more about how it works, and to document my journey of making it a better script. Other than the original pieces where I forked it from, the whole code is AI generated. I am not a coder!
+
 ## What it is
 
 This is a command-line tool that allows a user to download an archive of their Bluesky posts, remove likes, and delete old posts per user-specified criteria, namely age and virality.
