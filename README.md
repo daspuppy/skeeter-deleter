@@ -77,15 +77,15 @@ This command:
 
 ### Short comings
 
-In all my tests of both the original script and this one, for to me unknown reasons the script crashes. Sometimes a few times. But with every subsequent run it gets further. But unfortunately it does the same time it took until it crashed (sometimes hours) and then the additional time for running further. It has something to do with the likes cursor. That's a part of the script I don't understand at all, let alone know how to maybe optimize.
+In all my tests of both the original script and this one, for to me unknown reasons **the script crashes at least once** if not more. *But with every subsequent run it gets further.* Unfortunately it takes the same time it took until it crashed (sometimes hours) plus the then additional time for running further. It has something to do with the likes cursor. That's a part of the script I don't understand at all, let alone that I know how to maybe optimize.
 
-I also needed to add a API call delay of 750 milliseconds. Because once the script has run through the likes cursors successfully, it hits the rate limit of 5000 API calls per hour. With this delay it should not go over 4800 API calls when unliking and deleting old posts. That alone has cost me literal hours to test again and again.
+I also needed to add an API call delay of 750 milliseconds. Because once the script has run through the likes cursors successfully, it hits the rate limit of 5000 API calls per hour. With this delay it should not go over 4800 API calls per hour when unliking and deleting old posts. That alone has cost me literal hours to test again and again.
 
-The archiving to json with html for overview has not been tested yet! **_Your posts MIGHT NOT GET ARCHIVED!_**
+*The archiving to json with html for overview has not been tested yet!* **_Your posts MIGHT NOT GET ARCHIVED!_**
 
 ### Automating
 
-This could be run in a docker container in a Github action, in a cloud function, or in any other scheduled environment.
+This could be run in a docker container in a Github action, in a cloud function, or in any other scheduled environment. IF it doesn't crash!
 
 A simple shell script could look like this:
 
@@ -94,4 +94,5 @@ A simple shell script could look like this:
 
 ## Future Roadmap
 
-Bug fixing as they come up using it.
+- Bug fixing as they come up using it.
+- Stop it from crashing for the first (few) runs, and/or catch it crashing to either start again, or pick up where it left off. If the protocoll, or the script allows.
