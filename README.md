@@ -23,7 +23,7 @@ The tool allows you to create a curated feed of your content. Simply "like" your
 
 The tool works as follows:
 
-1. it downloads a CAR archive and creates a JSON file and an HTML file of all embedded media and stores it to an `archive` folder locally
+1. it downloads a CAR archive and embedded media and stores it to an `archive` folder locally
 1. it reads your account's likes feed and gathers likes of a certain configurable age
 1. it reads your account's posts, replies, and reposts and gathers all such items of a certain configurable age or popularity, as measured by the number of reblogs
 1. it unlikes posts
@@ -82,8 +82,6 @@ This command:
 In all my tests of both the original script and this one, for to me unknown reasons **the script crashes at least once** if not more. *But with every subsequent run it gets further.* Unfortunately it takes the same time it took until it crashed (sometimes hours) plus the then additional time for running further. It has something to do with the likes cursor. That's a part of the script I don't understand at all, let alone that I know how to maybe optimize.
 
 I also needed to add an API call delay of 750 milliseconds. Because once the script has run through the likes cursors successfully, it hits the rate limit of 5000 API calls per hour. With this delay it should not go over 4800 API calls per hour when unliking and deleting old posts. That alone has cost me literal hours to test again and again.
-
-*The archiving to json with html for overview has not been tested yet!* **_Your posts MIGHT NOT GET ARCHIVED!_**
 
 ### Automating
 
