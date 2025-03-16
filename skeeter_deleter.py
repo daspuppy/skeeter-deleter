@@ -18,10 +18,11 @@ RESUME_FILE = "resume_data.json"
 
 def load_resume_data():
     """
-    Load a JSON file (resume_data.json) containing:
+    Load a JSON file (resume_data.json) containing cursors:
       {
         "last_likes_cursor": "...",
-        "last_posts_cursor": "..."
+        "last_posts_cursor": "...",
+        "last_reposts_cursor": "..."
       }
     If not found or invalid, returns {}.
     """
@@ -35,7 +36,8 @@ def load_resume_data():
 
 def save_resume_data(data: dict):
     """
-    Save { "last_likes_cursor": "...", "last_posts_cursor": "..." } to resume_data.json
+    Save cursors to resume_data.json, e.g.:
+      { "last_likes_cursor": "...", "last_posts_cursor": "...", "last_reposts_cursor": "..." }
     """
     with open(RESUME_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
@@ -81,6 +83,9 @@ class PostQualifier(models.AppBskyFeedDefs.FeedViewPost):
         self.client.delete_like(self.post.viewer.like)
 
     def remove(self):
+        # remove => normal post or a repost that belongs to me
+        #   if it's my post => delete_post
+        #   if it's my repost => unrepost
         if self.post.author.did != self.client.me.did:
             try:
                 self.client.unrepost(self.post.viewer.repost)
@@ -103,9 +108,13 @@ class PostQualifier(models.AppBskyFeedDefs.FeedViewPost):
     @staticmethod
     def to_unlike(stale_threshold, now, post):
         return post.is_stale(stale_threshold, now) and not post.is_self_liked()
-    
+
     @staticmethod
-    def cast(client : Client, post : models.AppBskyFeedDefs.FeedViewPost):
+    def upgrade_post(client : Client, post : models.AppBskyFeedDefs.FeedViewPost):
+        """
+        Replaces the old .cast() method to avoid Pydantic collisions.
+        Called to transform a normal feed post object into a PostQualifier instance.
+        """
         post.__class__ = PostQualifier
         post._init_PostQualifier(client)
         return post
@@ -133,12 +142,8 @@ class SafeClient(Client):
     """
     A subclass of atproto.Client that adds:
     - Automatic retries for certain 5xx or network errors
-    - Helper methods for partial runs or storing progress
     """
     def safe_get_likes(self, uri, cursor=None, max_retries=3):
-        """
-        Attempt to fetch likes for a post, with retry on 502 or known network errors.
-        """
         backoff = 1.0
         for attempt in range(max_retries):
             try:
@@ -148,19 +153,12 @@ class SafeClient(Client):
                     'limit': 100
                 })
             except (atproto_client.exceptions.NetworkError, httpx.RequestError) as e:
-                # If it's an "UpstreamFailure" or similar, retry
-                # Check if there's a 502 code in the error, but let's keep it simple:
-                # just always retry up to max_retries.
                 print(f"safe_get_likes error on attempt {attempt+1}: {e}. Retrying...")
                 time.sleep(backoff)
                 backoff *= 2
-        # If we exhausted retries:
         raise Exception(f"Failed to fetch likes after {max_retries} attempts.")
 
     def safe_get_actor_likes(self, actor, cursor=None, max_retries=3):
-        """
-        Similar wrapper for get_actor_likes with partial pagination.
-        """
         backoff = 1.0
         for attempt in range(max_retries):
             try:
@@ -176,9 +174,6 @@ class SafeClient(Client):
         raise Exception(f"Failed to fetch actor_likes after {max_retries} attempts.")
 
     def safe_get_author_feed(self, handle, cursor=None, max_retries=3):
-        """
-        Similar wrapper for get_author_feed with partial pagination.
-        """
         backoff = 1.0
         for attempt in range(max_retries):
             try:
@@ -189,11 +184,26 @@ class SafeClient(Client):
                 backoff *= 2
         raise Exception(f"Failed to fetch author feed after {max_retries} attempts.")
 
+    def safe_list_records(self, repo, collection, cursor=None, max_retries=3):
+        backoff = 1.0
+        for attempt in range(max_retries):
+            try:
+                resp = self.com.atproto.repo.list_records(params={
+                    'repo': repo,
+                    'collection': collection,
+                    'cursor': cursor,
+                    'limit': 100
+                })
+                return resp
+            except (atproto_client.exceptions.NetworkError, httpx.RequestError) as e:
+                print(f"safe_list_records error on attempt {attempt+1}: {e}. Retrying...")
+                time.sleep(backoff)
+                backoff *= 2
+        raise Exception(f"Failed to list records from {collection} after {max_retries} attempts.")
 
 class SkeeterDeleter:
-    def gather_posts_to_unlike(self, stale_threshold, now, fixed_likes_cursor, pages_per_run, **kwargs) -> list[PostQualifier]:
+    def gather_posts_to_unlike(self, stale_threshold, now, fixed_likes_cursor, pages_per_run, **kwargs):
         resume = load_resume_data()
-        # If user didn't pass -c, try to resume
         effective_cursor = fixed_likes_cursor or resume.get("last_likes_cursor")
         if effective_cursor:
             print(f"Starting from likes cursor: {effective_cursor}")
@@ -209,7 +219,7 @@ class SkeeterDeleter:
                 actor=self.client.me.handle,
                 cursor=effective_cursor
             )
-            casted = [PostQualifier.cast(self.client, p) for p in posts.feed]
+            casted = [PostQualifier.upgrade_post(self.client, p) for p in posts.feed]
             new_unlikes = [p for p in casted if PostQualifier.to_unlike(stale_threshold, now, p)]
             to_unlike.extend(new_unlikes)
 
@@ -217,7 +227,6 @@ class SkeeterDeleter:
                 break
             effective_cursor = posts.cursor
             page_count += 1
-            # Save progress
             existing = load_resume_data()
             existing["last_likes_cursor"] = effective_cursor
             save_resume_data(existing)
@@ -228,9 +237,9 @@ class SkeeterDeleter:
         self.last_likes_cursor = effective_cursor
         return to_unlike
 
-    def gather_posts_to_delete(self, viral_threshold, stale_threshold, domains_to_protect, now, pages_per_run, **kwargs) -> list[PostQualifier]:
+    def gather_posts_to_delete(self, viral_threshold, stale_threshold, domains_to_protect, now, pages_per_run, **kwargs):
         resume = load_resume_data()
-        effective_cursor = resume.get("last_posts_cursor")  # We won't take it from command line
+        effective_cursor = resume.get("last_posts_cursor")
         page_count = 0
         to_delete = []
         while True:
@@ -242,7 +251,7 @@ class SkeeterDeleter:
                 handle=self.client.me.handle,
                 cursor=effective_cursor
             )
-            casted = [PostQualifier.cast(self.client, p) for p in posts.feed]
+            casted = [PostQualifier.upgrade_post(self.client, p) for p in posts.feed]
             delete_test = partial(PostQualifier.to_delete, viral_threshold, stale_threshold, domains_to_protect, now)
             new_deletions = [p for p in casted if delete_test(p)]
             to_delete.extend(new_deletions)
@@ -251,7 +260,6 @@ class SkeeterDeleter:
                 break
             effective_cursor = posts.cursor
             page_count += 1
-            # Save progress
             existing = load_resume_data()
             existing["last_posts_cursor"] = effective_cursor
             save_resume_data(existing)
@@ -261,6 +269,59 @@ class SkeeterDeleter:
 
         self.last_posts_cursor = effective_cursor
         return to_delete
+
+    def gather_reposts_to_unrepost(self, stale_boost_limit, now, pages_per_run):
+        """
+        For separate handling of older reposts. We'll list from "app.bsky.feed.repost".
+        We store progress in "last_reposts_cursor".
+        If stale_boost_limit=0, skip entirely.
+        """
+        if stale_boost_limit == 0:
+            return []
+
+        resume = load_resume_data()
+        effective_cursor = resume.get("last_reposts_cursor")
+        if effective_cursor:
+            print(f"Starting from reposts cursor: {effective_cursor}")
+
+        reposts_to_unrepost = []
+        page_count = 0
+        while True:
+            if pages_per_run > 0 and page_count >= pages_per_run:
+                print(f"Reached partial run limit of {pages_per_run} pages for reposts. Saving and stopping.")
+                break
+
+            resp = self.client.safe_list_records(
+                repo=self.client.me.handle,
+                collection="app.bsky.feed.repost",
+                cursor=effective_cursor
+            )
+            if not hasattr(resp, "records"):
+                break
+            if len(resp.records) == 0:
+                break
+
+            for r in resp.records:
+                created_str = r.value.created_at
+                created_at = dateutil.parser.isoparse(created_str)
+                if created_at <= now - timedelta(days=stale_boost_limit):
+                    reposts_to_unrepost.append(r.value.uri)
+                else:
+                    pass
+
+            if not resp.cursor or resp.cursor == effective_cursor:
+                break
+            effective_cursor = resp.cursor
+            page_count += 1
+            existing = load_resume_data()
+            existing["last_reposts_cursor"] = effective_cursor
+            save_resume_data(existing)
+
+            if self.verbosity > 0:
+                print(f"New reposts cursor: {effective_cursor}")
+
+        self.last_reposts_cursor = effective_cursor
+        return reposts_to_unrepost
 
     def batch_unlike_posts(self) -> None:
         if self.verbosity > 0:
@@ -277,6 +338,15 @@ class SkeeterDeleter:
             if self.verbosity == 2:
                 print(f"Deleting: {post.post.record.post} on {post.post.record.created_at}, CID: {post.post.cid}")
             post.remove()
+
+    def batch_unrepost(self, repost_uris):
+        if self.verbosity > 0:
+            print(f"Undoing {len(repost_uris)} older repost{'' if len(repost_uris) == 1 else 's'}")
+        for uri in rich.progress.track(repost_uris, description="Unreposting"):
+            try:
+                self.client.unrepost(uri)
+            except Exception as e:
+                print(f"Failed to unrepost: {uri} => {e}")
             
     def archive_repo(self, now, **kwargs):
         repo = self.client.com.atproto.sync.get_repo(params={'did': self.client.me.did})
@@ -320,58 +390,89 @@ class SkeeterDeleter:
 
     def __init__(
         self,
-        credentials: Credentials,
-        viral_threshold: int = 0,
-        stale_threshold: int = 0,
-        domains_to_protect: list[str] = [],
-        fixed_likes_cursor: str = None,
-        verbosity: int = 0,
-        autodelete: bool = False,
-        pages_per_run: int = 100
+        credentials,
+        viral_threshold=0,
+        stale_threshold=0,
+        domains_to_protect=[],
+        fixed_likes_cursor=None,
+        verbosity=0,
+        autodelete=False,
+        pages_per_run=100,
+        stale_boost_limit=0
     ):
-        # Use our SafeClient to gain the new methods
+        """
+        stale_boost_limit: # of days after which to un-repost older reposts. 0 = skip.
+        """
         self.client = SafeClient(request=RequestCustomTimeout())
         self.client.login(**credentials.dict())
 
+        self.verbosity = verbosity
+        self.autodelete = autodelete
+
+        now = datetime.now(timezone.utc)
         params = {
             'viral_threshold': viral_threshold,
             'stale_threshold': stale_threshold,
             'domains_to_protect': domains_to_protect,
             'fixed_likes_cursor': fixed_likes_cursor,
-            'now': datetime.now(timezone.utc),
+            'now': now,
             'pages_per_run': pages_per_run
         }
-        self.verbosity = verbosity
-        self.autodelete = autodelete
 
-        # 1) Archive (unchanged)
+        # 1) Archive
         self.archive_repo(**params)
 
-        # 2) Gather partial-run of likes to unlike
+        # 2) Gather likes to unlike
         self.to_unlike = self.gather_posts_to_unlike(**params)
         print(f"Found {len(self.to_unlike)} post{'' if len(self.to_unlike) == 1 else 's'} to unlike.")
 
-        # 3) Gather partial-run of posts to delete
+        # 3) Gather normal posts to delete
         self.to_delete = self.gather_posts_to_delete(**params)
         print(f"Found {len(self.to_delete)} post{'' if len(self.to_delete) == 1 else 's'} to delete.")
 
+        # 4) Gather older reposts if stale_boost_limit > 0
+        self.reposts_to_unrepost = self.gather_reposts_to_unrepost(stale_boost_limit, now, pages_per_run)
+        if stale_boost_limit > 0:
+            print(f"Found {len(self.reposts_to_unrepost)} older repost{'' if len(self.reposts_to_unrepost) == 1 else 's'} to undo.")
+
     def unlike(self):
         n_unlike = len(self.to_unlike)
-        prompt = None
-        while not self.autodelete and prompt not in ("Y", "n"):
-            prompt = input(f"""
-Proceed to unlike {n_unlike} post{'' if n_unlike == 1 else 's'}? WARNING: THIS IS DESTRUCTIVE AND CANNOT BE UNDONE. Y/n: """)
-        if self.autodelete or prompt == "Y":
-            self.batch_unlike_posts()
+        if n_unlike:
+            prompt = None
+            while not self.autodelete and prompt not in ("Y", "n"):
+                prompt = input(
+                    f"\nProceed to unlike {n_unlike} post{'' if n_unlike == 1 else 's'}?"
+                    " WARNING: THIS IS DESTRUCTIVE AND CANNOT BE UNDONE. Y/n: "
+                )
+            if self.autodelete or prompt == "Y":
+                self.batch_unlike_posts()
 
     def delete(self):
         n_delete = len(self.to_delete)
-        prompt = None
-        while not self.autodelete and prompt not in ("Y", "n"):
-            prompt = input(f"""
-Proceed to delete {n_delete} post{'' if n_delete == 1 else 's'}? WARNING: THIS IS DESTRUCTIVE AND CANNOT BE UNDONE. Y/n: """)
-        if self.autodelete or prompt == "Y":
-            self.batch_delete_posts()
+        if n_delete:
+            prompt = None
+            while not self.autodelete and prompt not in ("Y", "n"):
+                prompt = input(
+                    f"\nProceed to delete {n_delete} post{'' if n_delete == 1 else 's'}?"
+                    " WARNING: THIS IS DESTRUCTIVE AND CANNOT BE UNDONE. Y/n: "
+                )
+            if self.autodelete or prompt == "Y":
+                self.batch_delete_posts()
+
+    def unrepost(self):
+        """
+        Actually undo older reposts. If no reposts_to_unrepost, skip.
+        """
+        n_reposts = len(self.reposts_to_unrepost)
+        if n_reposts:
+            prompt = None
+            while not self.autodelete and prompt not in ("Y", "n"):
+                prompt = input(
+                    f"\nProceed to undo {n_reposts} old repost{'' if n_reposts == 1 else 's'}?"
+                    " WARNING: THIS IS DESTRUCTIVE AND CANNOT BE UNDONE. Y/n: "
+                )
+            if self.autodelete or prompt == "Y":
+                self.batch_unrepost(self.reposts_to_unrepost)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -380,15 +481,17 @@ if __name__ == "__main__":
     parser.add_argument("-p", "--password", required=True, help="Bluesky password")
 
     parser.add_argument("-l", "--max-reposts", type=int, default=0,
-                        help="Max reposts before deletion (0 to disable)")
+                        help="Max reposts before deletion (0 to disable). This is for normal posts only.")
     parser.add_argument("-s", "--stale-limit", type=int, default=0,
-                        help="Age in days that marks a post or like stale (0 to disable)")
+                        help="Age in days that marks a post or like stale (0 to disable).")
+    parser.add_argument("-b", "--stale-boost-limit", type=int, default=0,
+                        help="Age in days for older reposts. Reposts older than this limit will be undone. 0=skip.")
     parser.add_argument("-d", "--domains-to-protect", default="",
                         help="Comma separated list of domains to protect. Default empty.")
     parser.add_argument("-c", "--fixed-likes-cursor", default="",
                         help="Manually set a cursor to skip older likes. Default empty.")
     parser.add_argument("-P", "--pages-per-run", type=int, default=100,
-                        help="How many pages to process per run (for both likes & posts)")
+                        help="How many pages to process per run (for likes, posts, and reposts). Default=100")
     verbosity = parser.add_mutually_exclusive_group()
     verbosity.add_argument("-v", "--verbose", action="store_true",
                            help="Show more information about what is happening.")
@@ -399,25 +502,28 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    creds = Credentials(args.username, args.password)
+    domains_list = [s.strip() for s in args.domains_to_protect.split(",") if s.strip()]
     verbosity_level = 0
     if args.verbose:
         verbosity_level = 1
     elif args.very_verbose:
         verbosity_level = 2
 
-    domains_list = [s.strip() for s in args.domains_to_protect.split(",") if s.strip()]
+    creds = Credentials(args.username, args.password)
+    sd = SkeeterDeleter(
+        credentials=creds,
+        viral_threshold=args.max_reposts,
+        stale_threshold=args.stale_limit,
+        stale_boost_limit=args.stale_boost_limit,
+        domains_to_protect=domains_list,
+        fixed_likes_cursor=args.fixed_likes_cursor or None,
+        verbosity=verbosity_level,
+        autodelete=args.yes,
+        pages_per_run=args.pages_per_run
+    )
 
-    params = {
-        'viral_threshold': max(0, args.max_reposts),
-        'stale_threshold': max(0, args.stale_limit),
-        'domains_to_protect': domains_list,
-        'fixed_likes_cursor': args.fixed_likes_cursor or None,
-        'verbosity': verbosity_level,
-        'autodelete': args.yes,
-        'pages_per_run': args.pages_per_run
-    }
-
-    sd = SkeeterDeleter(credentials=creds, **params)
+    # Runs the normal unliking & deleting
     sd.unlike()
     sd.delete()
+    # Then asks about older reposts
+    sd.unrepost()
