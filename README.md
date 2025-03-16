@@ -127,6 +127,44 @@ python skeeter_deleter.py \
   - **–c 3lx7abcxyz2:** If you already cleared older likes, and you have a known “cursor” from a previous run, the script won’t re-fetch pages older than that cursor. This can speed things up significantly.
   - **–s 365:** anything older than one year is stale.
   - Keeps using default pages-per-run = 100.
+ 
+## **6. Skip Reposts (normal usage)**
+
+```python skeeter_deleter.py -u user -p pass -l 20 -s 50 -b 0```
+
+Leaves reposts alone, only deletes normal posts older than 50 days or above 20 reposts.
+
+## **7. Undo Reposts Older Than 7 Days**
+
+```python skeeter_deleter.py \
+  -u user \
+  -p pass \
+  -l 10 \
+  -s 30 \
+  -b 7 \
+  --pages-per-run 50 \
+  -v
+```
+
+Normal posts older than 30 days or with 10+ reposts are removed.
+Reposts older than 7 days are undone.
+Each partial run processes up to 50 pages at a time.
+Prints verbose logs.
+
+## **8. Just Reposts**
+
+```python skeeter_deleter.py \
+  -u user \
+  -p pass \
+  -s 0 \
+  -l 0 \
+  -b 14 \
+  -y
+```
+
+Ignores normal posts entirely (stale-limit=0, max-reposts=0 means skip).
+–b 14: Undoes reposts older than 14 days.
+Automatically says “yes” to destructive actions.
 
 ---
 
