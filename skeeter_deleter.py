@@ -305,7 +305,7 @@ class SkeeterDeleter:
                 created_str = r.value.created_at
                 created_at = dateutil.parser.isoparse(created_str)
                 if created_at <= now - timedelta(days=stale_boost_limit):
-                    reposts_to_unrepost.append(r.value.uri)
+                    reposts_to_unrepost.append(r.uri)
                 else:
                     pass
 
