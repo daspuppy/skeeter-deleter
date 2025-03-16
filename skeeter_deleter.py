@@ -5,19 +5,42 @@ import magic
 import os
 import rich.progress
 import time
+import json
 from atproto import CAR, Client, models
 from atproto_client.request import Request
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
+import atproto_client.exceptions
+
+RESUME_FILE = "resume_data.json"
+
+def load_resume_data():
+    """
+    Load a JSON file (resume_data.json) containing:
+      {
+        "last_likes_cursor": "...",
+        "last_posts_cursor": "..."
+      }
+    If not found or invalid, returns {}.
+    """
+    if os.path.exists(RESUME_FILE):
+        try:
+            with open(RESUME_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            pass
+    return {}
+
+def save_resume_data(data: dict):
+    """
+    Save { "last_likes_cursor": "...", "last_posts_cursor": "..." } to resume_data.json
+    """
+    with open(RESUME_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
 
 class PostQualifier(models.AppBskyFeedDefs.FeedViewPost):
-    # This class wraps the ATProto FeedViewPost instance of a post, as returned from the feed
-    # The rationale here is to separate post-related business logic (e.g. age heuristics, virality)
-    # from feed-related business logic
-    #
-    # These filters are customizable, or new filters can be added here
     def is_viral(self, viral_threshold) -> bool:
         if viral_threshold == 0:
             return False
@@ -26,25 +49,22 @@ class PostQualifier(models.AppBskyFeedDefs.FeedViewPost):
     def is_stale(self, stale_threshold, now) -> bool:
         if stale_threshold == 0:
             return False
-        return dateutil.parser.parse(self.post.record.created_at).replace(tzinfo=timezone.utc) <= \
-            now - timedelta(days=stale_threshold)
+        created_at = dateutil.parser.parse(self.post.record.created_at).replace(tzinfo=timezone.utc)
+        return created_at <= now - timedelta(days=stale_threshold)
 
     def is_protected_domain(self, domains_to_protect) -> bool:
-        return hasattr(self.post.embed, "external") and \
-            any([uri in self.post.embed.external.uri for uri in domains_to_protect])
+        return (
+            hasattr(self.post.embed, "external")
+            and any(uri in self.post.embed.external.uri for uri in domains_to_protect)
+        )
         
     def is_self_liked(self) -> bool:
-        # This looks through a post's likes to see if the author herself liked it,
-        # so that it won't be deleted. Used for both likes and posts, possibly inefficient.
+        # Possibly slow if many likes. We'll add a small retry for 502.
         lc = None
         while True:
-            likes = self.client.app.bsky.feed.get_likes(params={
-                'uri': self.post.uri,
-                'cursor': lc,
-                'limit': 100})
+            likes = self.client.safe_get_likes(self.post.uri, lc)  # uses a helper with retry
             lc = likes.cursor
-            if self.client.me.did in [l.actor.did for l in likes.likes] and \
-               self.post.author.did == self.client.me.did:
+            if self.client.me.did in [l.actor.did for l in likes.likes] and self.post.author.did == self.client.me.did:
                 return True
             if not lc:
                 break
@@ -64,13 +84,13 @@ class PostQualifier(models.AppBskyFeedDefs.FeedViewPost):
         if self.post.author.did != self.client.me.did:
             try:
                 self.client.unrepost(self.post.viewer.repost)
-            except:
-                print(f"Failed to unrepost: {self.post}")
+            except Exception as e:
+                print(f"Failed to unrepost: {self.post} ({e})")
         else:
             try:
                 self.client.delete_post(self.post.uri)
-            except:
-                print(f"Failed to delete: {self.post.uri}")
+            except Exception as e:
+                print(f"Failed to delete: {self.post.uri} ({e})")
 
     @staticmethod
     def to_delete(viral_threshold, stale_threshold, domains_to_protect, now, post):
@@ -82,8 +102,7 @@ class PostQualifier(models.AppBskyFeedDefs.FeedViewPost):
 
     @staticmethod
     def to_unlike(stale_threshold, now, post):
-        return post.is_stale(stale_threshold, now) and \
-               not post.is_self_liked()
+        return post.is_stale(stale_threshold, now) and not post.is_self_liked()
     
     @staticmethod
     def cast(client : Client, post : models.AppBskyFeedDefs.FeedViewPost):
@@ -103,71 +122,150 @@ class RequestCustomTimeout(Request):
     def __init__(self, timeout: httpx.Timeout = httpx.Timeout(120), *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._client = httpx.Client(follow_redirects=True, timeout=timeout)
-        # Wrap the client's request method to add a 750ms delay for every API call.
+        # Insert a 750 ms delay for every request to avoid rate-limit issues
         original_request = self._client.request
         def delayed_request(method, url, *args, **kwargs):
-            time.sleep(0.75)  # 750 millisecond delay
+            time.sleep(0.75)
             return original_request(method, url, *args, **kwargs)
         self._client.request = delayed_request
 
+class SafeClient(Client):
+    """
+    A subclass of atproto.Client that adds:
+    - Automatic retries for certain 5xx or network errors
+    - Helper methods for partial runs or storing progress
+    """
+    def safe_get_likes(self, uri, cursor=None, max_retries=3):
+        """
+        Attempt to fetch likes for a post, with retry on 502 or known network errors.
+        """
+        backoff = 1.0
+        for attempt in range(max_retries):
+            try:
+                return self.app.bsky.feed.get_likes(params={
+                    'uri': uri,
+                    'cursor': cursor,
+                    'limit': 100
+                })
+            except (atproto_client.exceptions.NetworkError, httpx.RequestError) as e:
+                # If it's an "UpstreamFailure" or similar, retry
+                # Check if there's a 502 code in the error, but let's keep it simple:
+                # just always retry up to max_retries.
+                print(f"safe_get_likes error on attempt {attempt+1}: {e}. Retrying...")
+                time.sleep(backoff)
+                backoff *= 2
+        # If we exhausted retries:
+        raise Exception(f"Failed to fetch likes after {max_retries} attempts.")
+
+    def safe_get_actor_likes(self, actor, cursor=None, max_retries=3):
+        """
+        Similar wrapper for get_actor_likes with partial pagination.
+        """
+        backoff = 1.0
+        for attempt in range(max_retries):
+            try:
+                return self.app.bsky.feed.get_actor_likes(params={
+                    'actor': actor,
+                    'cursor': cursor,
+                    'limit': 100
+                })
+            except (atproto_client.exceptions.NetworkError, httpx.RequestError) as e:
+                print(f"safe_get_actor_likes error on attempt {attempt+1}: {e}. Retrying...")
+                time.sleep(backoff)
+                backoff *= 2
+        raise Exception(f"Failed to fetch actor_likes after {max_retries} attempts.")
+
+    def safe_get_author_feed(self, handle, cursor=None, max_retries=3):
+        """
+        Similar wrapper for get_author_feed with partial pagination.
+        """
+        backoff = 1.0
+        for attempt in range(max_retries):
+            try:
+                return self.get_author_feed(handle, cursor=cursor, filter="from:me", limit=100)
+            except (atproto_client.exceptions.NetworkError, httpx.RequestError) as e:
+                print(f"safe_get_author_feed error on attempt {attempt+1}: {e}. Retrying...")
+                time.sleep(backoff)
+                backoff *= 2
+        raise Exception(f"Failed to fetch author feed after {max_retries} attempts.")
+
 
 class SkeeterDeleter:
+    def gather_posts_to_unlike(self, stale_threshold, now, fixed_likes_cursor, pages_per_run, **kwargs) -> list[PostQualifier]:
+        resume = load_resume_data()
+        # If user didn't pass -c, try to resume
+        effective_cursor = fixed_likes_cursor or resume.get("last_likes_cursor")
+        if effective_cursor:
+            print(f"Starting from likes cursor: {effective_cursor}")
 
-    def gather_posts_to_unlike(self, stale_threshold, now, fixed_likes_cursor, **kwargs) -> list[PostQualifier]:
-        cursor = None
         to_unlike = []
+        page_count = 0
         while True:
-            posts = self.client.app.bsky.feed.get_actor_likes(params={
-                "actor": self.client.me.handle,
-                "cursor": cursor,
-                "limit": 100
-            })
-            to_unlike.extend(list(filter(
-                partial(PostQualifier.to_unlike, stale_threshold, now),
-                map(partial(PostQualifier.cast, self.client), posts.feed)
-            )))
-            
-            if cursor == posts.cursor or (fixed_likes_cursor and posts.cursor < fixed_likes_cursor):
+            if pages_per_run > 0 and page_count >= pages_per_run:
+                print(f"Reached partial run limit of {pages_per_run} pages for likes. Saving and stopping.")
                 break
-            else:
-                cursor = posts.cursor
-                if verbosity > 0:
-                    print(cursor)
+
+            posts = self.client.safe_get_actor_likes(
+                actor=self.client.me.handle,
+                cursor=effective_cursor
+            )
+            casted = [PostQualifier.cast(self.client, p) for p in posts.feed]
+            new_unlikes = [p for p in casted if PostQualifier.to_unlike(stale_threshold, now, p)]
+            to_unlike.extend(new_unlikes)
+
+            if not posts.cursor or posts.cursor == effective_cursor:
+                break
+            effective_cursor = posts.cursor
+            page_count += 1
+            # Save progress
+            existing = load_resume_data()
+            existing["last_likes_cursor"] = effective_cursor
+            save_resume_data(existing)
+
+            if self.verbosity > 0:
+                print(f"New likes cursor: {effective_cursor}")
+
+        self.last_likes_cursor = effective_cursor
         return to_unlike
 
-    def gather_posts_to_delete(self, viral_threshold, stale_threshold, domains_to_protect, now, **kwargs) -> list[PostQualifier]:
-        cursor = None
+    def gather_posts_to_delete(self, viral_threshold, stale_threshold, domains_to_protect, now, pages_per_run, **kwargs) -> list[PostQualifier]:
+        resume = load_resume_data()
+        effective_cursor = resume.get("last_posts_cursor")  # We won't take it from command line
+        page_count = 0
         to_delete = []
         while True:
-            posts = self.client.get_author_feed(
-                self.client.me.handle,
-                cursor=cursor,
-                filter="from:me",
-                limit=100
-            )
-            delete_test = partial(
-                PostQualifier.to_delete,
-                viral_threshold,
-                stale_threshold,
-                domains_to_protect,
-                now
-            )
-            to_delete.extend(list(filter(
-                delete_test,
-                map(partial(PostQualifier.cast, self.client), posts.feed)
-            )))
-
-            cursor = posts.cursor
-            if self.verbosity > 0:
-                print(cursor)
-            if cursor is None:
+            if pages_per_run > 0 and page_count >= pages_per_run:
+                print(f"Reached partial run limit of {pages_per_run} pages for posts. Saving and stopping.")
                 break
+
+            posts = self.client.safe_get_author_feed(
+                handle=self.client.me.handle,
+                cursor=effective_cursor
+            )
+            casted = [PostQualifier.cast(self.client, p) for p in posts.feed]
+            delete_test = partial(PostQualifier.to_delete, viral_threshold, stale_threshold, domains_to_protect, now)
+            new_deletions = [p for p in casted if delete_test(p)]
+            to_delete.extend(new_deletions)
+
+            if not posts.cursor or posts.cursor == effective_cursor:
+                break
+            effective_cursor = posts.cursor
+            page_count += 1
+            # Save progress
+            existing = load_resume_data()
+            existing["last_posts_cursor"] = effective_cursor
+            save_resume_data(existing)
+
+            if self.verbosity > 0:
+                print(f"New posts cursor: {effective_cursor}")
+
+        self.last_posts_cursor = effective_cursor
         return to_delete
 
     def batch_unlike_posts(self) -> None:
         if self.verbosity > 0:
             print(f"Unliking {len(self.to_unlike)} post{'' if len(self.to_unlike) == 1 else 's'}")
-        for post in rich.progress.track(self.to_unlike):
+        for post in rich.progress.track(self.to_unlike, description="Unliking posts"):
             if self.verbosity == 2:
                 print(f"Unliking: {post.post.record.post} by {post.post.author.handle}, CID: {post.post.cid}")
             post.delete_like()
@@ -175,7 +273,7 @@ class SkeeterDeleter:
     def batch_delete_posts(self) -> None:
         if self.verbosity > 0:
             print(f"Deleting {len(self.to_delete)} post{'' if len(self.to_delete) == 1 else 's'}")
-        for post in rich.progress.track(self.to_delete):
+        for post in rich.progress.track(self.to_delete, description="Deleting posts"):
             if self.verbosity == 2:
                 print(f"Deleting: {post.post.record.post} on {post.post.record.created_at}, CID: {post.post.cid}")
             post.remove()
@@ -194,19 +292,31 @@ class SkeeterDeleter:
         print("Downloading and archiving media...")
         blob_cids = []
         while True:
-            blob_page = self.client.com.atproto.sync.list_blobs(params={'did': self.client.me.did, 'cursor': cursor})
+            try:
+                blob_page = self.client.com.atproto.sync.list_blobs(params={'did': self.client.me.did, 'cursor': cursor})
+            except Exception as e:
+                print(f"Error listing blobs: {e}")
+                break
             blob_cids.extend(blob_page.cids)
             cursor = blob_page.cursor
             if not cursor:
                 break
-        for cid in rich.progress.track(blob_cids):
-            blob = self.client.com.atproto.sync.get_blob(params={'cid': cid, 'did': self.client.me.did})
-            type = magic.from_buffer(blob, 2048)
-            ext = ".jpeg" if type == "image/jpeg" else ""
-            with open(f"archive/{clean_user_did}/_blob/{cid}{ext}", "wb") as f:
-                if self.verbosity == 2:
-                    print(f"Saving {cid}{ext}")
-                f.write(blob)
+        for cid in rich.progress.track(blob_cids, description="Downloading blobs"):
+            try:
+                blob = self.client.com.atproto.sync.get_blob(params={'cid': cid, 'did': self.client.me.did})
+            except Exception as e:
+                print(f"Error fetching blob {cid}: {e}")
+                continue
+            file_type = magic.from_buffer(blob, 2048)
+            ext = ".jpeg" if file_type == "image/jpeg" else ""
+            file_path = f"archive/{clean_user_did}/_blob/{cid}{ext}"
+            try:
+                with open(file_path, "wb") as f:
+                    if self.verbosity == 2:
+                        print(f"Saving blob {cid}{ext}")
+                    f.write(blob)
+            except Exception as ee:
+                print(f"Error writing blob {cid}{ext} => {ee}")
 
     def __init__(
         self,
@@ -216,27 +326,32 @@ class SkeeterDeleter:
         domains_to_protect: list[str] = [],
         fixed_likes_cursor: str = None,
         verbosity: int = 0,
-        autodelete: bool = False
+        autodelete: bool = False,
+        pages_per_run: int = 100
     ):
-        self.client = Client(request=RequestCustomTimeout())
+        # Use our SafeClient to gain the new methods
+        self.client = SafeClient(request=RequestCustomTimeout())
         self.client.login(**credentials.dict())
 
-        # the parameters are a mess, sorry, this is a to-fix
         params = {
             'viral_threshold': viral_threshold,
             'stale_threshold': stale_threshold,
             'domains_to_protect': domains_to_protect,
             'fixed_likes_cursor': fixed_likes_cursor,
             'now': datetime.now(timezone.utc),
+            'pages_per_run': pages_per_run
         }
         self.verbosity = verbosity
         self.autodelete = autodelete
 
+        # 1) Archive (unchanged)
         self.archive_repo(**params)
 
+        # 2) Gather partial-run of likes to unlike
         self.to_unlike = self.gather_posts_to_unlike(**params)
         print(f"Found {len(self.to_unlike)} post{'' if len(self.to_unlike) == 1 else 's'} to unlike.")
 
+        # 3) Gather partial-run of posts to delete
         self.to_delete = self.gather_posts_to_delete(**params)
         print(f"Found {len(self.to_delete)} post{'' if len(self.to_delete) == 1 else 's'} to delete.")
 
@@ -247,7 +362,7 @@ class SkeeterDeleter:
             prompt = input(f"""
 Proceed to unlike {n_unlike} post{'' if n_unlike == 1 else 's'}? WARNING: THIS IS DESTRUCTIVE AND CANNOT BE UNDONE. Y/n: """)
         if self.autodelete or prompt == "Y":
-            sd.batch_unlike_posts()
+            self.batch_unlike_posts()
 
     def delete(self):
         n_delete = len(self.to_delete)
@@ -256,48 +371,51 @@ Proceed to unlike {n_unlike} post{'' if n_unlike == 1 else 's'}? WARNING: THIS I
             prompt = input(f"""
 Proceed to delete {n_delete} post{'' if n_delete == 1 else 's'}? WARNING: THIS IS DESTRUCTIVE AND CANNOT BE UNDONE. Y/n: """)
         if self.autodelete or prompt == "Y":
-            sd.batch_delete_posts()
+            self.batch_delete_posts()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
-    # Switch from environment vars to CLI flags for username & password
     parser.add_argument("-u", "--username", required=True, help="Bluesky username")
     parser.add_argument("-p", "--password", required=True, help="Bluesky password")
 
-    parser.add_argument("-l", "--max-reposts", help="""The upper bound of the number of reposts a post can have before it is deleted.
-Ignore or set to 0 to not set an upper limit. This feature deletes posts that are going viral, which can reduce harassment.
-Defaults to 0.""", default=0, type=int)
-    parser.add_argument("-s", "--stale-limit", help="""The upper bound of the age of a post in days before it is deleted.
-Ignore or set to 0 to not set an upper limit. This feature deletes old posts that may be taken out of context or selectively
-misinterpreted, reducing potential harassment. Default=0.""", default=0, type=int)
-    parser.add_argument("-d", "--domains-to-protect", help="""A comma separated list of domain names to protect.
-Posts linking to these domains will not be auto-deleted regardless of age or virality. Default is empty.""", default="")
-    parser.add_argument("-c", "--fixed-likes-cursor", help="""A complex setting. ATProto pagination is awkward, and it will page
-through the entire account history even if there are no likes. This can take a long time. If you've already purged likes,
-you can set a token to skip older likes. Default empty.""", default="")
+    parser.add_argument("-l", "--max-reposts", type=int, default=0,
+                        help="Max reposts before deletion (0 to disable)")
+    parser.add_argument("-s", "--stale-limit", type=int, default=0,
+                        help="Age in days that marks a post or like stale (0 to disable)")
+    parser.add_argument("-d", "--domains-to-protect", default="",
+                        help="Comma separated list of domains to protect. Default empty.")
+    parser.add_argument("-c", "--fixed-likes-cursor", default="",
+                        help="Manually set a cursor to skip older likes. Default empty.")
+    parser.add_argument("-P", "--pages-per-run", type=int, default=100,
+                        help="How many pages to process per run (for both likes & posts)")
     verbosity = parser.add_mutually_exclusive_group()
-    verbosity.add_argument("-v", "--verbose", help="Show more information about what is happening.", action="store_true")
-    verbosity.add_argument("-vv", "--very-verbose", help="Show granular information about what is happening.", action="store_true")
-    parser.add_argument("-y", "--yes", help="Ignore warning prompts for deletion. For automation.", action="store_true", default=False)
+    verbosity.add_argument("-v", "--verbose", action="store_true",
+                           help="Show more information about what is happening.")
+    verbosity.add_argument("-vv", "--very-verbose", action="store_true",
+                           help="Show granular information about what is happening.")
+    parser.add_argument("-y", "--yes", action="store_true", default=False,
+                        help="Skip confirmation prompts (automation mode).")
+
     args = parser.parse_args()
 
-    # Convert flags -> credentials object
     creds = Credentials(args.username, args.password)
-
-    verbosity = 0
+    verbosity_level = 0
     if args.verbose:
-        verbosity = 1
+        verbosity_level = 1
     elif args.very_verbose:
-        verbosity = 2
+        verbosity_level = 2
+
+    domains_list = [s.strip() for s in args.domains_to_protect.split(",") if s.strip()]
 
     params = {
-        'viral_threshold': max([0, args.max_reposts]),
-        'stale_threshold': max([0, args.stale_limit]),
-        'domains_to_protect': [s.strip() for s in args.domains_to_protect.split(",")],
-        'fixed_likes_cursor': args.fixed_likes_cursor,
-        'verbosity': verbosity,
-        'autodelete': args.yes
+        'viral_threshold': max(0, args.max_reposts),
+        'stale_threshold': max(0, args.stale_limit),
+        'domains_to_protect': domains_list,
+        'fixed_likes_cursor': args.fixed_likes_cursor or None,
+        'verbosity': verbosity_level,
+        'autodelete': args.yes,
+        'pages_per_run': args.pages_per_run
     }
 
     sd = SkeeterDeleter(credentials=creds, **params)
