@@ -29,19 +29,23 @@ The tool works as follows:
 1. it unlikes posts
 1. it deletes posts
 
+---
+
 ## Installation
 
 Clone this repository and install the python libraries from `requirements.txt` using your preferred python package management solution. Note: you will need to install `libmagic`. Please see the instructions on [the `python-magic` pypi page](https://pypi.org/project/python-magic/).
 
 **You no longer need to set environment variables, `BLUESKY_USERNAME` and `BLUESKY_PASSWORD` in your OS. I suggest creating an App-Password.**
 
+---
+
 ## Running
 
-Here are some **example commands** you might include in your README to show how best to use the script. Each example highlights a different combination of flags and scenarios.
+Some **example commands** to show how best to use the script. Each example highlights a different combination of flags and scenarios.
 
 ---
 
-## **1. Basic Usage (No Deletions)**
+### **1. Basic Usage (No Deletions)**
 
 ```bash
 python skeeter_deleter.py \
@@ -58,7 +62,7 @@ python skeeter_deleter.py \
 
 ---
 
-## **2. Delete Old Posts, No Virality Check**
+### **2. Delete Old Posts, No Virality Check**
 
 ```bash
 python skeeter_deleter.py \
@@ -75,7 +79,7 @@ python skeeter_deleter.py \
 
 ---
 
-## **3. Virality + Old Posts, With Fewer Pages Per Run**
+### **3. Virality + Old Posts, With Fewer Pages Per Run**
 
 ```bash
 python skeeter_deleter.py \
@@ -95,7 +99,7 @@ python skeeter_deleter.py \
 
 ---
 
-## **4. Automatic Confirm, Verbose Logs**
+### **4. Automatic Confirm, Verbose Logs**
 
 ```bash
 python skeeter_deleter.py \
@@ -113,7 +117,7 @@ python skeeter_deleter.py \
 
 ---
 
-## **5. Skipping Old Likes with a Fixed Cursor**
+### **5. Skipping Old Likes with a Fixed Cursor**
 
 ```bash
 python skeeter_deleter.py \
@@ -128,13 +132,13 @@ python skeeter_deleter.py \
   - **–s 365:** anything older than one year is stale.
   - Keeps using default pages-per-run = 100.
  
-## **6. Skip Reposts (normal usage)**
+### **6. Skip Reposts (normal usage)**
 
 ```python skeeter_deleter.py -u user -p pass -l 20 -s 50 -b 0```
 
 Leaves reposts alone, only deletes normal posts older than 50 days or above 20 reposts.
 
-## **7. Undo Reposts Older Than 7 Days**
+### **7. Undo Reposts Older Than 7 Days**
 
 ```python skeeter_deleter.py \
   -u user \
@@ -151,7 +155,7 @@ Reposts older than 7 days are undone.
 Each partial run processes up to 50 pages at a time.
 Prints verbose logs.
 
-## **8. Just Reposts**
+### **8. Just Reposts**
 
 ```python skeeter_deleter.py \
   -u user \
