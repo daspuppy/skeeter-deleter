@@ -201,7 +201,7 @@ A simple shell script could look like this:
     python /path/to/skeeter-deleter/skeeter-deleter.py -u username -p mypassword -d example.com,mydomain.net -l 20 -s 14 --pages-per-run 2000 2>&1
 
 This is my current bash script I am running:
-´´´#!/bin/bash
+```#!/bin/bash
 
 # Activate the virtual environment
 source /path/to/skeeter_env/bin/activate
@@ -234,7 +234,7 @@ do
     sleep 30
   fi
 done
-´´´
+```
 
 ## Future Roadmap
 
