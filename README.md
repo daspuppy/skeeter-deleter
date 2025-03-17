@@ -200,6 +200,42 @@ A simple shell script could look like this:
     source /path/to/skeeter-venv/bin/activate
     python /path/to/skeeter-deleter/skeeter-deleter.py -u username -p mypassword -d example.com,mydomain.net -l 20 -s 14 --pages-per-run 2000 2>&1
 
+This is my current bash script I am running:
+´´´#!/bin/bash
+
+# Activate the virtual environment
+source /path/to/skeeter_env/bin/activate
+
+# Change to the correct directory (important if script expects relative paths)
+cd /path/to/projects/skeeter-deleter
+
+# Run the Python script
+
+while true
+do
+  python skeeter_deleter.py \
+    -u USERNAME \
+    -p PASSWORD \
+    -l 20 \
+    -s 30 \
+    -b 7 \
+    --pages-per-run 10000 \
+    -y
+
+  EXIT_CODE=$?
+  if [ $EXIT_CODE -eq 0 ]
+  then
+    echo "Script completed successfully. Deleting resume_data.json with this content:"
+    cat resume_data.json
+    rm resume_data.json
+    break
+  else
+    echo "Script crashed or exited with code $EXIT_CODE. Retrying in 30 seconds..."
+    sleep 30
+  fi
+done
+´´´
+
 ## Future Roadmap
 
 - Bug fixing as they come up using it.
