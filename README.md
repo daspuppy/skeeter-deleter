@@ -1,5 +1,5 @@
 # skeeter-deleter
-A github action for auto-deleting Bluesky posts.
+A python script for auto-deleting Bluesky posts.
 
 THIS CODE IS VERY DESTRUCTIVE. The maintainer assumes no liability or warranty for its use. Use at your own peril.
 
